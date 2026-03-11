@@ -9,11 +9,14 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const EASTMONEY_SRC = '/Users/jiabozhang/Documents/Develop/vibecoding/ifind/eastmoney/src';
 
-// 动态加载 eastmoney 模块
-const { EastMoneyClient } = await import(`${EASTMONEY_SRC}/client.js`);
-const { fetchHistory, fetchHighFreq, fetchRealtime } = await import(`${EASTMONEY_SRC}/api.js`);
+// 将 console.log 重定向到 stderr，保持 stdout 纯净输出 JSON
+const _log = console.log;
+console.log = (...args) => process.stderr.write(args.join(' ') + '\n');
+
+// 加载内置 eastmoney 模块
+const { EastMoneyClient } = await import('./eastmoney/client.js');
+const { fetchHistory, fetchHighFreq, fetchRealtime } = await import('./eastmoney/api.js');
 
 // 读取 watchlist
 const watchlist = JSON.parse(readFileSync(resolve(__dirname, 'watchlist.json'), 'utf-8'));
@@ -83,4 +86,5 @@ for (const code of watchlist.codes) {
   output.stocks[code] = stock;
 }
 
-console.log(JSON.stringify(output, null, 2));
+// 恢复 stdout 输出 JSON
+_log(JSON.stringify(output, null, 2));

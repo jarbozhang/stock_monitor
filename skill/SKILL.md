@@ -18,8 +18,11 @@ description: |
 运行数据拉取脚本获取所有 watchlist 股票的实时行情、日线和小时线：
 
 ```bash
-node /Users/jiabozhang/.claude/skills/stock-monitor/scripts/fetch_data.js 2>/dev/null
+node "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/../scripts/fetch_data.js" 2>/dev/null
 ```
+
+> 如果上述路径解析不可用，这个脚本的绝对路径是 skill 安装目录下的 `scripts/fetch_data.js`。
+> 例如：`node <skill-dir>/scripts/fetch_data.js 2>/dev/null`
 
 脚本输出 JSON，包含每只股票的：
 - `realtime` — 实时快照（最新价、涨跌幅、成交量、成交额、资金流向等）
@@ -62,10 +65,7 @@ node /Users/jiabozhang/.claude/skills/stock-monitor/scripts/fetch_data.js 2>/dev
 
 ## watchlist 管理
 
-watchlist 存储在：
-```
-/Users/jiabozhang/.claude/skills/stock-monitor/scripts/watchlist.json
-```
+watchlist 存储在 skill 目录下的 `scripts/watchlist.json`。
 
 格式：
 ```json
