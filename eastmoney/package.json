@@ -1,0 +1,16 @@
+{
+  "name": "eastmoney-cli",
+  "version": "1.0.0",
+  "description": "东方财富 Web API 股票数据查询工具",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/unit.test.js test/e2e.test.js",
+    "test:unit": "node --test test/unit.test.js",
+    "test:e2e": "node --test test/e2e.test.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
