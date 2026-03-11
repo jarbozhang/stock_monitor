@@ -1,0 +1,13 @@
+{
+  "name": "ifind-cli",
+  "version": "1.0.0",
+  "description": "iFinD HTTP API batch stock data query tool",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
