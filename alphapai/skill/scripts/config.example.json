@@ -1,0 +1,6 @@
+{
+  "authorization": "<your-jwt-token>",
+  "xDevice": "<your-device-id>",
+  "baseUrl": "https://alphapai-web.rabyte.cn",
+  "pageSize": 50
+}
