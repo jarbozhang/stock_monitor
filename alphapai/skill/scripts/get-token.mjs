@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 const BASE_URL = 'https://alphapai-web.rabyte.cn';
-const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const TIMEOUT_MS = 5 * 60 * 1000;
 
 async function main() {
   console.log('🚀 正在启动浏览器...\n');
@@ -25,10 +25,10 @@ async function main() {
 
   let capturedToken = null;
   let capturedDevice = null;
+  let capturedSecretKey = null;
   let resolveToken;
   const tokenPromise = new Promise(r => { resolveToken = r; });
 
-  // 拦截所有请求，捕获带 authorization 的 API 调用
   page.on('request', req => {
     if (capturedToken) return;
     const headers = req.headers();
@@ -47,15 +47,15 @@ async function main() {
   console.log('   登录成功后会自动捕获 token 并保存');
   console.log('   超时时间：5 分钟\n');
 
-  // 等待 token 被捕获或超时
   const timer = setTimeout(() => resolveToken(), TIMEOUT_MS);
   await tokenPromise;
   clearTimeout(timer);
 
-  // 如果请求拦截没抓到，尝试从 localStorage 提取
   if (!capturedToken) {
     try {
       capturedToken = await page.evaluate(() => {
+        const direct = localStorage.getItem('USER_AUTH_TOKEN');
+        if (direct && direct.startsWith('eyJ')) return direct;
         for (const key of Object.keys(localStorage)) {
           const val = localStorage.getItem(key);
           if (val && val.startsWith('eyJ')) return val;
@@ -66,20 +66,35 @@ async function main() {
     } catch {}
   }
 
+  if (!capturedSecretKey) {
+    try {
+      capturedSecretKey = await page.evaluate(() => localStorage.getItem('SECRET_KEY'));
+      if (capturedSecretKey) console.log('✅ 从 localStorage 提取到 SECRET_KEY！');
+    } catch {}
+  }
+
+  if (!capturedDevice) {
+    try {
+      capturedDevice = await page.evaluate(() => localStorage.getItem('xDevice'));
+    } catch {}
+  }
+
   if (capturedToken) {
-    // 读取现有配置或创建新配置
     let config = {};
     if (fs.existsSync(CONFIG_FILE)) {
       config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     }
     config.authorization = capturedToken;
     if (capturedDevice) config.xDevice = capturedDevice;
+    if (capturedSecretKey) config.secretKey = capturedSecretKey;
     if (!config.baseUrl) config.baseUrl = BASE_URL;
     if (!config.pageSize) config.pageSize = 50;
 
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
-    console.log(`\n💾 Token 已保存到 config.json`);
-    console.log(`   前缀: ${capturedToken.substring(0, 30)}...`);
+    console.log(`\n💾 认证信息已保存到 config.json`);
+    console.log(`   token前缀: ${capturedToken.substring(0, 30)}...`);
+    if (capturedDevice) console.log(`   xDevice: ${capturedDevice}`);
+    if (capturedSecretKey) console.log(`   secretKey前缀: ${capturedSecretKey.substring(0, 12)}...`);
   } else {
     console.log('\n❌ 超时未能捕获 token，请重新运行');
   }

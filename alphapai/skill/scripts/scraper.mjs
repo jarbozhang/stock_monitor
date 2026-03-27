@@ -24,6 +24,7 @@ function loadConfig() {
     const defaultConfig = {
       authorization: '',
       xDevice: '',
+      secretKey: '',
       baseUrl: 'https://alphapai-web.rabyte.cn',
       pageSize: 50,
     };
@@ -36,13 +37,20 @@ function loadConfig() {
 
 // ─── HTTP 请求封装 ──────────────────────────────────────
 function makeHeaders(config) {
-  return {
+  const headers = {
     'accept': 'application/json',
     'authorization': config.authorization,
     'content-type': 'application/json',
     'x-device': config.xDevice || '21ba596c57b2fa20139b6bb6c0cc5325',
     'x-from': 'web',
+    'origin': config.baseUrl,
+    'referer': `${config.baseUrl}/`,
+    'user-agent': 'Mozilla/5.0 OpenClaw AlphaPai Reader',
   };
+  if (config.secretKey) {
+    headers['cookie'] = `sk=${config.secretKey}`;
+  }
+  return headers;
 }
 
 async function fetchList(config, { pageNum = 1, pageSize, keyword = '', beginTime = '', endTime = '' } = {}) {
@@ -72,7 +80,12 @@ async function fetchList(config, { pageNum = 1, pageSize, keyword = '', beginTim
     body: JSON.stringify(body),
   });
   const data = await resp.json();
-  if (data.code !== 200000) throw new Error(`List API error: ${data.message}`);
+  if (data.code !== 200000) {
+    if (resp.status === 401 || data.code === 401000) {
+      throw new Error('List API unauthorized: 缺少或失效的 authorization / secretKey(sk) / xDevice');
+    }
+    throw new Error(`List API error: ${data.message || data.msg || JSON.stringify(data)}`);
+  }
   return data.data;
 }
 
@@ -94,10 +107,8 @@ function extractMeeting(detail) {
   const v3 = detail.aiSummaryV3 || {};
   const aiSummary = detail.aiSummary || {};
 
-  // 提取 QA 列表
   const qaList = (v3.qaListV2 || v3.qaList || []).map(qa => {
     if (qa.question) {
-      // v2 format
       const q = (qa.question.content || []).map(c => c.text).join('');
       const a = (qa.answer || []).map(ans =>
         (ans.content || []).map(c => c.text).join('')
@@ -107,7 +118,6 @@ function extractMeeting(detail) {
     return { q: qa.q, a: qa.a };
   });
 
-  // 提取要点
   const topics = (v3.topicBulletsV2 || v3.topicBullets || []).map(topic => {
     const title = topic.title;
     const bullets = (topic.points || topic.bullets || []).map(b => {
@@ -119,7 +129,6 @@ function extractMeeting(detail) {
     return { title, bullets };
   });
 
-  // 提取分段摘要
   const segments = (v3.summarySegment || detail.summarySegmentList || []).map(s => ({
     startTime: s.startTime,
     endTime: s.endTime,
@@ -127,7 +136,6 @@ function extractMeeting(detail) {
     summary: s.summary,
   }));
 
-  // 提取录音转录（mtSummary.content）
   const speakerRecognition = v3.speakerRecognition || [];
   const speakerMap = {};
   for (const s of speakerRecognition) {
@@ -141,7 +149,6 @@ function extractMeeting(detail) {
       const rawSegments = typeof mtSummary.content === 'string'
         ? JSON.parse(mtSummary.content)
         : mtSummary.content;
-      // 合并同一发言人的连续段落
       let current = null;
       for (const seg of rawSegments) {
         const speaker = speakerMap[seg.role] || `发言人${seg.role}`;
@@ -181,7 +188,6 @@ function extractMeeting(detail) {
   };
 }
 
-// ─── Markdown 格式化 ─────────────────────────────────────
 function toMarkdown(meeting) {
   const lines = [];
   lines.push(`# ${meeting.title}`);
@@ -258,105 +264,124 @@ function toMarkdown(meeting) {
   return lines.join('\n');
 }
 
-// ─── 主流程 ──────────────────────────────────────────────
-async function main() {
-  const config = loadConfig();
-  const args = process.argv.slice(2);
-
-  let pages = 1;
-  let keyword = '';
-  let days = 0;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--pages') pages = parseInt(args[++i]);
-    if (args[i] === '--keyword') keyword = args[++i];
-    if (args[i] === '--days') days = parseInt(args[++i]);
-  }
-
-  let beginTime = '';
-  if (days > 0) {
-    const d = new Date();
-    d.setDate(d.getDate() - days);
-    beginTime = d.toISOString().split('T')[0] + ' 00:00:00';
-  }
-
-  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-
-  // 1. 获取会议列表
-  let allItems = [];
-  for (let p = 1; p <= pages; p++) {
-    console.log(`📋 获取列表第 ${p}/${pages} 页...`);
-    const result = await fetchList(config, { pageNum: p, keyword, beginTime });
-    allItems = allItems.concat(result.list);
-    console.log(`   共 ${result.total} 条，本页 ${result.list.length} 条`);
-
-    if (result.list.length < config.pageSize) break; // 没有更多了
-    if (p < pages) await sleep(500); // 请求间隔
-  }
-
-  console.log(`\n🎯 共获取 ${allItems.length} 条会议，开始抓取详情...\n`);
-
-  // 2. 逐条获取详情并保存
-  let success = 0;
-  let skip = 0;
-  for (let i = 0; i < allItems.length; i++) {
-    const item = allItems[i];
-    const dateStr = (item.roadshowDate || item.date || '').split(' ')[0];
-    // 清理搜索结果中的 HTML 高亮标签
-    const cleanTitle = (item.title || 'untitled').replace(/<[^>]+>/g, '');
-    const safeTitle = cleanTitle.replace(/[/\\?%*:|"<>]/g, '_').substring(0, 80);
-    const filename = `${dateStr}_${safeTitle}.md`;
-    const filepath = path.join(OUTPUT_DIR, filename);
-
-    // 跳过已存在的文件
-    if (fs.existsSync(filepath)) {
-      skip++;
-      continue;
-    }
-
-    console.log(`[${i + 1}/${allItems.length}] ${item.title?.substring(0, 60)}...`);
-
-    try {
-      const detail = await fetchDetail(config, item.id);
-      const meeting = extractMeeting(detail);
-      const md = toMarkdown(meeting);
-      fs.writeFileSync(filepath, md, 'utf-8');
-      success++;
-    } catch (err) {
-      console.error(`   ❌ ${err.message}`);
-    }
-
-    // 请求间隔，避免被限流
-    if (i < allItems.length - 1) await sleep(300);
-  }
-
-  console.log(`\n✅ 完成！成功 ${success} 条，跳过 ${skip} 条（已存在），保存至 ${OUTPUT_DIR}`);
-
-  // 3. 保存列表索引
-  const indexPath = path.join(OUTPUT_DIR, '_index.json');
-  const indexData = allItems.map(item => ({
-    id: item.id,
-    title: item.title,
-    date: item.roadshowDate || item.date,
-    industry: (item.industry || []).map(i => i.name),
-    stock: (item.stock || []).map(s => s.name),
-    pv: item.pv,
-  }));
-  fs.writeFileSync(indexPath, JSON.stringify(indexData, null, 2), 'utf-8');
+function sanitizeFilename(name) {
+  return name.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
 }
 
 function formatMs(ms) {
+  if (ms == null) return '00:00';
   const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 }
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function parseArgs(argv) {
+  const args = { pages: 1, keyword: '', days: 0 };
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--pages') args.pages = parseInt(argv[++i], 10) || 1;
+    else if (arg === '--keyword') args.keyword = argv[++i] || '';
+    else if (arg === '--days') args.days = parseInt(argv[++i], 10) || 0;
+    else if (arg === '--help' || arg === '-h') {
+      console.log('用法: node scraper.mjs [--pages N] [--keyword 关键词] [--days N]');
+      process.exit(0);
+    }
+  }
+  return args;
+}
+
+async function main() {
+  const args = parseArgs(process.argv);
+  const config = loadConfig();
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+  let beginTime = '';
+  let endTime = '';
+  if (args.days > 0) {
+    const now = new Date();
+    const past = new Date(now.getTime() - args.days * 24 * 60 * 60 * 1000);
+    beginTime = past.toISOString().slice(0, 10);
+    endTime = now.toISOString().slice(0, 10);
+  }
+
+  const allMeetings = [];
+  const index = [];
+
+  for (let page = 1; page <= args.pages; page++) {
+    console.log(`📄 抓取第 ${page}/${args.pages} 页...`);
+    const listData = await fetchList(config, {
+      pageNum: page,
+      keyword: args.keyword,
+      beginTime,
+      endTime,
+    });
+
+    const items = listData.list || [];
+    if (items.length === 0) {
+      console.log('没有更多数据');
+      break;
+    }
+
+    for (const item of items) {
+      try {
+        const title = (item.title || '').replace(/<[^>]+>/g, '');
+        const date = item.roadshowDate || 'unknown-date';
+        const filename = sanitizeFilename(`${date}_${title}.md`);
+        const filepath = path.join(OUTPUT_DIR, filename);
+
+        if (fs.existsSync(filepath)) {
+          console.log(`⏭️  跳过已存在: ${filename}`);
+          index.push({
+            id: item.id,
+            title,
+            date,
+            industry: (item.industry || []).map(i => i.name),
+            stock: (item.stock || []).map(s => `${s.name}(${s.code})`),
+            file: filename,
+          });
+          continue;
+        }
+
+        console.log(`  ↳ 下载: ${title}`);
+        const detail = await fetchDetail(config, item.id);
+        const meeting = extractMeeting(detail);
+        const md = toMarkdown(meeting);
+        fs.writeFileSync(filepath, md, 'utf-8');
+
+        index.push({
+          id: meeting.id,
+          title: meeting.title,
+          date: meeting.date,
+          industry: meeting.industry,
+          stock: meeting.stock,
+          file: filename,
+        });
+        allMeetings.push(meeting);
+
+        await sleep(300);
+      } catch (err) {
+        console.error(`  ❌ 失败: ${item.title} - ${err.message}`);
+      }
+    }
+
+    await sleep(500);
+  }
+
+  const indexPath = path.join(OUTPUT_DIR, '_index.json');
+  fs.writeFileSync(indexPath, JSON.stringify(index, null, 2), 'utf-8');
+
+  console.log(`\n✅ 完成！`);
+  console.log(`- 新下载: ${allMeetings.length} 条`);
+  console.log(`- 索引文件: ${indexPath}`);
+  console.log(`- 输出目录: ${OUTPUT_DIR}`);
+}
+
 main().catch(err => {
-  console.error('Fatal:', err);
+  console.error('❌ 错误:', err.message);
   process.exit(1);
 });

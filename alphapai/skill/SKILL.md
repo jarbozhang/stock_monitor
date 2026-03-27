@@ -20,13 +20,21 @@ description: |
 1. **抓取会议** — 从 Alpha派 批量拉取会议纪要，保存为 Markdown
 2. **搜索阅读** — 在已下载的纪要中搜索特定内容
 3. **Token 管理** — 检查和更新认证 token
+4. **浏览器兜底登录** — 当接口认证失效时，自动用 `agent-browser` 登录 Alpha派 后再重试抓取
 
 ## 抓取会议
 
-运行抓取脚本。脚本位于 skill 目录下的 `scripts/scraper.mjs`：
+主抓取脚本位于：
 
 ```bash
 node <skill-dir>/scripts/scraper.mjs [选项]
+```
+
+如果希望在认证失败时自动改走浏览器登录兜底，优先使用：
+
+```bash
+ALPHAPAI_PHONE="手机号" ALPHAPAI_PASSWORD="密码" \
+  <skill-dir>/scripts/fetch-with-browser-fallback.sh [选项]
 ```
 
 ### 支持的选项
@@ -45,6 +53,7 @@ node <skill-dir>/scripts/scraper.mjs [选项]
 - 用户说"抓取AI相关的" → `node <skill-dir>/scripts/scraper.mjs --keyword "AI"`
 - 用户说"把最近一周的都拉下来" → `node <skill-dir>/scripts/scraper.mjs --days 7 --pages 5`
 - 用户说"全量抓取" → 使用较大的 `--pages` 值，注意请求间隔已内置 300ms
+- 如果之前报过 `unauthorized` / `缺少或失效的 authorization` → 改用 `fetch-with-browser-fallback.sh`
 
 ### 输出格式
 
@@ -73,7 +82,7 @@ node <skill-dir>/scripts/scraper.mjs [选项]
 - 读取 `_index.json` 获取完整索引，按行业或个股筛选
 
 当用户想看某条会议的内容时，直接读取对应的 Markdown 文件并展示关键信息。
-用户可能只想看摘要，也可能想看完整转录 — 根据需求决定展示多少内容。
+用户可能只想看摘要，也可能想看完整转录 —— 根据需求决定展示多少内容。
 
 ## Token 管理
 
@@ -81,18 +90,19 @@ node <skill-dir>/scripts/scraper.mjs [选项]
 
 ```json
 {
-  "authorization": "JWT token",
+  "authorization": "JWT token / USER_AUTH_TOKEN",
   "xDevice": "设备ID",
+  "secretKey": "浏览器 localStorage 中的 SECRET_KEY（如果站点给）",
   "baseUrl": "https://alphapai-web.rabyte.cn",
   "pageSize": 50
 }
 ```
 
-Token 是 JWT 格式，有过期时间。Alpha派 在其他设备登录后会使旧 token 失效。
+Token 是 JWT 格式，有过期时间。Alpha派 在其他设备登录后会使旧 token 失效；当前站点可能还会校验 `x-device`，部分环境下也可能校验 `SECRET_KEY` / `sk`。
 
-### 自动获取 Token（推荐）
+### 自动获取 Token（Playwright 方案）
 
-当 token 过期或认证失败时，运行自动获取脚本：
+当 token 过期或认证失败时，可运行：
 
 ```bash
 node <skill-dir>/scripts/get-token.mjs
@@ -101,22 +111,71 @@ node <skill-dir>/scripts/get-token.mjs
 脚本会：
 1. 打开一个可视浏览器窗口，导航到 Alpha派 登录页
 2. 用户在浏览器中完成登录（手机号+验证码、微信扫码等）
-3. 登录成功后，自动拦截 API 请求中的 JWT token
-4. 将 token 保存到 `config.json`，浏览器自动关闭
+3. 登录成功后，自动拦截 API 请求中的 JWT token，并尽量提取 `x-device`
+4. 同时尝试从 localStorage 读取 `SECRET_KEY`
+5. 将 `authorization`、`xDevice`、`secretKey` 保存到 `config.json`
 
-**首次使用前需安装依赖**（在项目根目录）：
+首次使用前需安装依赖：
+
 ```bash
-cd <project-root> && npm install
+cd <skill-dir>/scripts && npm install playwright
+npx playwright install chromium
 ```
 
-超时时间 5 分钟。如果拦截失败，脚本会尝试从 localStorage 提取 token 作为兜底。
+### 自动获取 Token（agent-browser 兜底）
 
-### 手动获取 Token
+如果 Playwright 方式没弹出窗口、登录态不稳定、或用户明确要求走浏览器自动化，则使用：
 
-如果自动方式不可用，可手动获取：
-1. 登录 Alpha派 Web 端 (`https://alphapai-web.rabyte.cn`)
-2. F12 → Network → 任意 XHR 请求 → 复制 `authorization` header 值
-3. 更新 `config.json` 中的 `authorization` 字段
+```bash
+<skill-dir>/scripts/refresh-auth-via-agent-browser.sh <phone> <password>
+```
+
+也可以通过环境变量传入：
+
+```bash
+ALPHAPAI_PHONE="138xxxx" ALPHAPAI_PASSWORD="******" \
+  <skill-dir>/scripts/refresh-auth-via-agent-browser.sh
+```
+
+如果希望长期本机使用且不想每次手输，优先创建私有本地文件：
+
+```bash
+cp <skill-dir>/scripts/auth.local.example.json <skill-dir>/scripts/auth.local.json
+# 然后把手机号/密码填进去
+```
+
+脚本读取优先级：
+1. 命令行参数
+2. 环境变量 `ALPHAPAI_PHONE` / `ALPHAPAI_PASSWORD`
+3. `<skill-dir>/scripts/auth.local.json`
+
+`auth.local.json` 仅用于本机私有凭据，已加入 `.gitignore`，不要提交到仓库。
+
+这个脚本会：
+1. 用 `agent-browser` 打开 Alpha派 登录页
+2. 切到“账号密码登录”
+3. 自动填入手机号和密码并提交
+4. 等待进入站内首页
+5. 从 localStorage 提取 `USER_AUTH_TOKEN`
+6. **在 `agent-browser` 登录成功后，必须立即把最新的本地接口认证信息同步写回 `config.json`**，至少包括 `authorization`，并尽量更新 `xDevice` / `secretKey`
+
+执行纪律：
+- 只要 `agent-browser` 登录成功，不要停留在“浏览器里能用了”。
+- 必须把浏览器拿到的最新 token 同步回本地接口配置，确保后续 `scraper.mjs` 能继续直接调用接口。
+- 如果浏览器登录成功但没更新 `config.json`，视为流程未完成。
+
+### 推荐抓取流程
+
+遇到以下错误时，默认不要反复盲重试接口，而是切到浏览器兜底：
+- `unauthorized`
+- `缺少或失效的 authorization`
+- `token过期`
+- 用户明确说“重新登录 Alpha派”
+
+优先顺序：
+1. 直接跑 `scraper.mjs`
+2. 若报认证错误，运行 `fetch-with-browser-fallback.sh`
+3. 如果仍失败，再人工检查页面结构或站点风控
 
 ## 注意事项
 
@@ -124,4 +183,5 @@ cd <project-root> && npm install
 - 请求间隔已内置 300ms，避免被限流
 - 部分会议可能没有录音转录（无 mtSummary 数据），这是正常的
 - 搜索关键词时 API 返回的标题可能带 HTML 高亮标签，脚本已自动清理
+- 如果接口报“系统繁忙，请稍后再试”，这更像站点侧限流/风控，不等于本地认证失效
 - 输出使用简体中文
