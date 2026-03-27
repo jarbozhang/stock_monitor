@@ -8,6 +8,7 @@ description: |
   当用户提到"alpha派"、"阿尔法派"、"alphapai"、"alphapie"、"抓取会议"、"拉取纪要"、
   "路演纪要"、"卖方会议"时触发此技能。
   也适用于用户想查看已下载的会议内容、搜索特定主题的纪要时触发。
+  当用户提到"刷新token"、"获取token"、"token过期"、"重新登录alpha派"时也触发此技能。
 ---
 
 # Alpha派会议纪要抓取与阅读
@@ -87,11 +88,35 @@ node <skill-dir>/scripts/scraper.mjs [选项]
 }
 ```
 
-Token 是 JWT 格式，有过期时间。当抓取报错提示认证失败时：
-1. 告知用户 token 已过期
-2. 指导用户登录 Alpha派 Web 端 (`https://alphapai-web.rabyte.cn`)
-3. 打开 F12 → Network → 任意 XHR 请求 → 复制 `authorization` header 值
-4. 更新 `config.json` 中的 `authorization` 字段
+Token 是 JWT 格式，有过期时间。Alpha派 在其他设备登录后会使旧 token 失效。
+
+### 自动获取 Token（推荐）
+
+当 token 过期或认证失败时，运行自动获取脚本：
+
+```bash
+node <skill-dir>/scripts/get-token.mjs
+```
+
+脚本会：
+1. 打开一个可视浏览器窗口，导航到 Alpha派 登录页
+2. 用户在浏览器中完成登录（手机号+验证码、微信扫码等）
+3. 登录成功后，自动拦截 API 请求中的 JWT token
+4. 将 token 保存到 `config.json`，浏览器自动关闭
+
+**首次使用前需安装依赖**（在项目根目录）：
+```bash
+cd <project-root> && npm install
+```
+
+超时时间 5 分钟。如果拦截失败，脚本会尝试从 localStorage 提取 token 作为兜底。
+
+### 手动获取 Token
+
+如果自动方式不可用，可手动获取：
+1. 登录 Alpha派 Web 端 (`https://alphapai-web.rabyte.cn`)
+2. F12 → Network → 任意 XHR 请求 → 复制 `authorization` header 值
+3. 更新 `config.json` 中的 `authorization` 字段
 
 ## 注意事项
 
